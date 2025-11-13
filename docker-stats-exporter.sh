@@ -51,6 +51,10 @@ while [[ $# -gt 0 ]]; do
             source "$CONFIG_FILE"
             shift 2
             ;;
+        --test-server)
+            TEST_MODE="true"
+            shift
+            ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
@@ -59,6 +63,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --log-level LEVEL     Log level: DEBUG, INFO, WARN, ERROR (default: INFO)"
             echo "  --bind-address ADDR   Address to bind to (default: 0.0.0.0)"
             echo "  --config FILE         Configuration file path"
+            echo "  --test-server         Test HTTP server without Docker (for debugging)"
             echo "  --help               Show this help message"
             exit 0
             ;;
@@ -442,49 +447,59 @@ EOF
 start_http_server() {
     log "INFO" "Starting HTTP server on $BIND_ADDRESS:$PORT"
     
+    # Test if port is available first
+    if command -v netstat >/dev/null 2>&1; then
+        if netstat -ln 2>/dev/null | grep -q ":$PORT "; then
+            log "ERROR" "Port $PORT is already in use"
+            exit 1
+        fi
+    fi
+    
     # Create a simple HTTP server using socat or netcat
     if command -v socat >/dev/null 2>&1; then
+        log "INFO" "Using socat for HTTP server"
         # Use socat if available (more robust)
-        while true; do
-            if [[ -f "$METRICS_FILE" ]]; then
-                if ! (
-                    echo "HTTP/1.1 200 OK"
-                    echo "Content-Type: text/plain; version=0.0.4; charset=utf-8"
-                    echo "Content-Length: $(wc -c < "$METRICS_FILE" 2>/dev/null || echo 0)"
-                    echo ""
-                    cat "$METRICS_FILE"
-                ) | socat TCP-LISTEN:$PORT,bind=$BIND_ADDRESS,reuseaddr,fork STDIO 2>/dev/null; then
-                    log "ERROR" "Failed to start HTTP server on $BIND_ADDRESS:$PORT"
-                    log "ERROR" "Port may already be in use"
-                    exit 1
-                fi
+        socat TCP-LISTEN:$PORT,bind=$BIND_ADDRESS,reuseaddr,fork EXEC:'bash -c "
+            echo \"HTTP/1.1 200 OK\"
+            echo \"Content-Type: text/plain; version=0.0.4; charset=utf-8\"
+            echo \"Connection: close\"
+            echo \"\"
+            if [[ -f \"'$METRICS_FILE'\" ]]; then
+                cat \"'$METRICS_FILE'\"
             else
-                sleep 1
+                echo \"# Metrics not available yet\"
             fi
-        done &
+        "' &
+        SERVER_PID=$!
     elif command -v nc >/dev/null 2>&1; then
-        # Fallback to netcat
+        log "INFO" "Using netcat for HTTP server"
+        # Fallback to netcat - simple approach
         while true; do
             if [[ -f "$METRICS_FILE" ]]; then
                 (
                     echo "HTTP/1.1 200 OK"
                     echo "Content-Type: text/plain; version=0.0.4; charset=utf-8"
+                    echo "Connection: close"
                     echo ""
                     cat "$METRICS_FILE"
                 ) | nc -l -p "$PORT" -q 1
             else
-                sleep 1
+                echo "# Metrics not available yet" | nc -l -p "$PORT" -q 1
             fi
         done &
+        SERVER_PID=$!
     else
         log "ERROR" "Neither socat nor netcat (nc) found. Cannot start HTTP server."
         exit 1
     fi
     
     # Save server PID
-    echo $! > "$PID_FILE"
-    log "INFO" "HTTP server started with PID: $(cat "$PID_FILE")"
+    echo "$SERVER_PID" > "$PID_FILE"
+    log "INFO" "HTTP server started with PID: $SERVER_PID"
     log "INFO" "Metrics available at: http://$BIND_ADDRESS:$PORT/metrics"
+    
+    # Give server a moment to start
+    sleep 2
 }
 
 # Check dependencies
@@ -527,7 +542,38 @@ main() {
     log "INFO" "Starting Prometheus Docker Stats Exporter"
     log "INFO" "Configuration: Port=$PORT, Interval=${INTERVAL}s, LogLevel=$LOG_LEVEL"
     
-    # Check dependencies
+    # Test mode - just run HTTP server without Docker
+    if [[ "${TEST_MODE:-}" == "true" ]]; then
+        log "INFO" "Running in test mode (no Docker required)"
+        
+        # Create a simple test metrics file
+        cat > "$METRICS_FILE" << 'EOF'
+# HELP test_metric A test metric for server verification
+# TYPE test_metric gauge
+test_metric{status="ok"} 1
+
+# HELP http_server_up HTTP server status
+# TYPE http_server_up gauge  
+http_server_up 1
+EOF
+        
+        log "INFO" "Created test metrics file"
+        
+        # Start HTTP server
+        start_http_server
+        
+        log "INFO" "Test server running. Try: curl http://localhost:$PORT/metrics"
+        log "INFO" "Press Ctrl+C to stop"
+        
+        # Keep running until interrupted
+        while true; do
+            sleep 1
+        done
+        
+        return 0
+    fi
+    
+    # Normal mode - check dependencies and collect Docker stats
     check_dependencies
     
     # Initialize metrics file

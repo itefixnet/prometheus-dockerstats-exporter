@@ -1,0 +1,12 @@
+[Unit]
+Description=Prometheus Docker Stats Exporter
+After=docker.service
+
+[Service]
+Type=simple
+ExecStart=/path/to/docker-stats-exporter.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

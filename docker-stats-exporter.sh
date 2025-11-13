@@ -239,10 +239,11 @@ collect_metrics() {
     # Get docker stats output
     local docker_output
     if ! docker_output=$(docker stats --no-stream --format "table {{.Container}}\t{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}" 2>/dev/null); then
-        log "ERROR" "Failed to get Docker stats. Possible causes:"
-        log "ERROR" "  1. No containers running"
-        log "ERROR" "  2. Docker permission denied"
-        log "ERROR" "  3. Docker daemon not responding"
+        log "WARN" "Failed to get Docker stats. Possible causes:"
+        log "WARN" "  1. No containers running"
+        log "WARN" "  2. Docker permission denied" 
+        log "WARN" "  3. Docker daemon not responding"
+        log "WARN" "Will retry in ${INTERVAL}s..."
         return 1
     fi
     
@@ -428,6 +429,10 @@ EOF
     timestamp=$(date +%s)
     cat >> "$METRICS_TEMP" << EOF
 
+# HELP docker_stats_exporter_up Exporter status (1=up, 0=down)
+# TYPE docker_stats_exporter_up gauge
+docker_stats_exporter_up 1
+
 # HELP docker_stats_exporter_last_scrape_timestamp_seconds Last time metrics were scraped
 # TYPE docker_stats_exporter_last_scrape_timestamp_seconds gauge
 docker_stats_exporter_last_scrape_timestamp_seconds $timestamp
@@ -502,25 +507,9 @@ start_http_server() {
     sleep 2
 }
 
-# Check dependencies
-check_dependencies() {
-    log "INFO" "Checking dependencies..."
-    
-    # Check for Docker
-    if ! command -v docker >/dev/null 2>&1; then
-        log "ERROR" "Docker not found. Please install Docker."
-        exit 1
-    fi
-    
-    # Check Docker daemon
-    if ! docker info >/dev/null 2>&1; then
-        log "ERROR" "Cannot connect to Docker daemon. Common causes:"
-        log "ERROR" "  1. Docker is not running"
-        log "ERROR" "  2. User lacks permission to access Docker socket"
-        log "ERROR" "  3. Add user to docker group: sudo usermod -a -G docker \$USER"
-        log "ERROR" "  4. Restart session or run: newgrp docker"
-        exit 1
-    fi
+# Check basic dependencies (required for startup)
+check_basic_dependencies() {
+    log "INFO" "Checking basic dependencies..."
     
     # Check for bc (calculator)
     if ! command -v bc >/dev/null 2>&1; then
@@ -534,7 +523,28 @@ check_dependencies() {
         exit 1
     fi
     
-    log "INFO" "All dependencies satisfied"
+    log "INFO" "Basic dependencies satisfied"
+}
+
+# Check Docker availability (non-fatal)
+check_docker() {
+    # Check for Docker
+    if ! command -v docker >/dev/null 2>&1; then
+        log "WARN" "Docker not found. Please install Docker."
+        return 1
+    fi
+    
+    # Check Docker daemon
+    if ! docker info >/dev/null 2>&1; then
+        log "WARN" "Cannot connect to Docker daemon. Common causes:"
+        log "WARN" "  1. Docker is not running"
+        log "WARN" "  2. User lacks permission to access Docker socket"
+        log "WARN" "  3. Add user to docker group: sudo usermod -a -G docker \$USER"
+        log "WARN" "  4. Restart session or run: newgrp docker"
+        return 1
+    fi
+    
+    return 0
 }
 
 # Main function
@@ -573,8 +583,15 @@ EOF
         return 0
     fi
     
-    # Normal mode - check dependencies and collect Docker stats
-    check_dependencies
+    # Normal mode - check basic dependencies first
+    check_basic_dependencies
+    
+    # Check Docker availability (but don't exit if not available)
+    if check_docker; then
+        log "INFO" "Docker is available"
+    else
+        log "WARN" "Docker is not available - will serve error metrics and retry"
+    fi
     
     # Initialize metrics file
     touch "$METRICS_FILE"
@@ -583,18 +600,36 @@ EOF
     start_http_server
     
     # Main collection loop
+    log "INFO" "Starting metrics collection loop (interval: ${INTERVAL}s)"
+    log "INFO" "Press Ctrl+C to stop"
+    
     while true; do
         local start_time
         start_time=$(date +%s.%N)
         
-        collect_metrics
+        # Try to collect metrics, but don't exit if it fails
+        if collect_metrics; then
+            log "DEBUG" "Metrics collection successful"
+        else
+            log "WARN" "Metrics collection failed, will retry in ${INTERVAL}s"
+            # Create empty metrics file so HTTP server has something to serve
+            cat > "$METRICS_FILE" << EOF
+# HELP docker_stats_exporter_up Exporter status (1=up, 0=down)
+# TYPE docker_stats_exporter_up gauge
+docker_stats_exporter_up 0
+
+# HELP docker_stats_exporter_last_error_timestamp_seconds Timestamp of last error
+# TYPE docker_stats_exporter_last_error_timestamp_seconds gauge
+docker_stats_exporter_last_error_timestamp_seconds $(date +%s)
+EOF
+        fi
         
         local end_time
         end_time=$(date +%s.%N)
         local duration
         duration=$(echo "$end_time - $start_time" | bc -l)
         
-        log "DEBUG" "Collection completed in ${duration}s"
+        log "DEBUG" "Collection cycle completed in ${duration}s"
         
         # Calculate sleep time
         local sleep_time

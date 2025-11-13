@@ -101,6 +101,12 @@ log() {
 
 # Cleanup function
 cleanup() {
+    # Prevent multiple cleanup calls
+    if [[ "${CLEANUP_DONE:-}" == "true" ]]; then
+        return 0
+    fi
+    CLEANUP_DONE="true"
+    
     log "INFO" "Shutting down exporter..."
     
     # Kill HTTP server if running
@@ -110,6 +116,8 @@ cleanup() {
         if [[ -n "$server_pid" ]] && kill -0 "$server_pid" 2>/dev/null; then
             log "INFO" "Stopping HTTP server (PID: $server_pid)"
             kill "$server_pid" 2>/dev/null || true
+            # Wait a bit for graceful shutdown
+            sleep 1
         fi
         rm -f "$PID_FILE"
     fi
@@ -118,7 +126,6 @@ cleanup() {
     rm -f "$METRICS_TEMP"
     
     log "INFO" "Exporter stopped"
-    exit 0
 }
 
 # Set up signal handlers

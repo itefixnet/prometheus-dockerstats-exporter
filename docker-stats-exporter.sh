@@ -247,13 +247,38 @@ collect_metrics() {
         return 1
     fi
     
-    # Create metrics file header
+    # Create complete metrics file with all metric types and data in one pass
     cat > "$METRICS_TEMP" << 'EOF'
 # HELP docker_container_cpu_usage_percent CPU usage percentage of the container
 # TYPE docker_container_cpu_usage_percent gauge
+
+# HELP docker_container_memory_usage_bytes Memory usage in bytes
+# TYPE docker_container_memory_usage_bytes gauge
+
+# HELP docker_container_memory_limit_bytes Memory limit in bytes
+# TYPE docker_container_memory_limit_bytes gauge
+
+# HELP docker_container_memory_usage_percent Memory usage percentage
+# TYPE docker_container_memory_usage_percent gauge
+
+# HELP docker_container_network_rx_bytes_total Total network bytes received
+# TYPE docker_container_network_rx_bytes_total gauge
+
+# HELP docker_container_network_tx_bytes_total Total network bytes transmitted
+# TYPE docker_container_network_tx_bytes_total gauge
+
+# HELP docker_container_block_io_read_bytes_total Total block I/O bytes read
+# TYPE docker_container_block_io_read_bytes_total gauge
+
+# HELP docker_container_block_io_write_bytes_total Total block I/O bytes written
+# TYPE docker_container_block_io_write_bytes_total gauge
+
+# HELP docker_container_pids Number of PIDs in the container
+# TYPE docker_container_pids gauge
+
 EOF
 
-    # Skip header line and process each container
+    # Process each container once and generate all metrics
     local line_count=0
     local container_count=0
     while IFS=$'\t' read -r container_id container_name cpu_perc mem_usage mem_perc net_io block_io pids; do
@@ -273,7 +298,7 @@ EOF
         
         log "DEBUG" "Processing container: $container_name ($container_id)"
         
-        # Parse values
+        # Parse all values once
         local cpu_value
         cpu_value=$(parse_percentage "$cpu_perc")
         
@@ -303,8 +328,18 @@ EOF
         safe_container_id=$(echo "$container_id" | sed 's/"/\\"/g')
         safe_container_name=$(echo "$container_name" | sed 's/"/\\"/g')
         
-        # CPU metrics
-        echo "docker_container_cpu_usage_percent{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $cpu_value" >> "$METRICS_TEMP"
+        # Generate ALL metrics for this container at once
+        {
+            echo "docker_container_cpu_usage_percent{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $cpu_value"
+            echo "docker_container_memory_usage_bytes{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $mem_usage_bytes"
+            echo "docker_container_memory_limit_bytes{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $mem_limit_bytes"
+            echo "docker_container_memory_usage_percent{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $mem_perc_value"
+            echo "docker_container_network_rx_bytes_total{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $net_rx"
+            echo "docker_container_network_tx_bytes_total{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $net_tx"
+            echo "docker_container_block_io_read_bytes_total{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $block_read"
+            echo "docker_container_block_io_write_bytes_total{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $block_write"
+            echo "docker_container_pids{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $pids_value"
+        } >> "$METRICS_TEMP"
         
     done <<< "$docker_output"
     
@@ -315,114 +350,7 @@ EOF
         log "DEBUG" "Processed $container_count containers"
     fi
     
-    # Add other metric types
-    cat >> "$METRICS_TEMP" << 'EOF'
 
-# HELP docker_container_memory_usage_bytes Memory usage in bytes
-# TYPE docker_container_memory_usage_bytes gauge
-EOF
-
-    # Process again for memory metrics
-    line_count=0
-    while IFS=$'\t' read -r container_id container_name cpu_perc mem_usage mem_perc net_io block_io pids; do
-        ((line_count++))
-        
-        if [[ $line_count -eq 1 ]] || [[ -z "$container_id" ]]; then
-            continue
-        fi
-        
-        local mem_values
-        mem_values=$(parse_memory "$mem_usage")
-        local mem_usage_bytes mem_limit_bytes
-        read -r mem_usage_bytes mem_limit_bytes <<< "$mem_values"
-        
-        local mem_perc_value
-        mem_perc_value=$(parse_percentage "$mem_perc")
-        
-        local net_values
-        net_values=$(parse_io "$net_io")
-        local net_rx net_tx
-        read -r net_rx net_tx <<< "$net_values"
-        
-        local block_values
-        block_values=$(parse_io "$block_io")
-        local block_read block_write
-        read -r block_read block_write <<< "$block_values"
-        
-        local pids_value
-        pids_value="${pids:-0}"
-        
-        local safe_container_id safe_container_name
-        safe_container_id=$(echo "$container_id" | sed 's/"/\\"/g')
-        safe_container_name=$(echo "$container_name" | sed 's/"/\\"/g')
-        
-        # Memory metrics
-        echo "docker_container_memory_usage_bytes{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $mem_usage_bytes" >> "$METRICS_TEMP"
-        echo "docker_container_memory_limit_bytes{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $mem_limit_bytes" >> "$METRICS_TEMP"
-        echo "docker_container_memory_usage_percent{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $mem_perc_value" >> "$METRICS_TEMP"
-        
-    done <<< "$docker_output"
-    
-    # Add remaining metric headers and data
-    cat >> "$METRICS_TEMP" << 'EOF'
-
-# HELP docker_container_memory_limit_bytes Memory limit in bytes
-# TYPE docker_container_memory_limit_bytes gauge
-
-# HELP docker_container_memory_usage_percent Memory usage percentage
-# TYPE docker_container_memory_usage_percent gauge
-
-# HELP docker_container_network_rx_bytes_total Total network bytes received
-# TYPE docker_container_network_rx_bytes_total gauge
-
-# HELP docker_container_network_tx_bytes_total Total network bytes transmitted
-# TYPE docker_container_network_tx_bytes_total gauge
-
-# HELP docker_container_block_io_read_bytes_total Total block I/O bytes read
-# TYPE docker_container_block_io_read_bytes_total gauge
-
-# HELP docker_container_block_io_write_bytes_total Total block I/O bytes written
-# TYPE docker_container_block_io_write_bytes_total gauge
-
-# HELP docker_container_pids Number of PIDs in the container
-# TYPE docker_container_pids gauge
-
-EOF
-
-    # Process for network, block IO, and PIDs metrics
-    line_count=0
-    while IFS=$'\t' read -r container_id container_name cpu_perc mem_usage mem_perc net_io block_io pids; do
-        ((line_count++))
-        
-        if [[ $line_count -eq 1 ]] || [[ -z "$container_id" ]]; then
-            continue
-        fi
-        
-        local net_values
-        net_values=$(parse_io "$net_io")
-        local net_rx net_tx
-        read -r net_rx net_tx <<< "$net_values"
-        
-        local block_values
-        block_values=$(parse_io "$block_io")
-        local block_read block_write
-        read -r block_read block_write <<< "$block_values"
-        
-        local pids_value
-        pids_value="${pids:-0}"
-        
-        local safe_container_id safe_container_name
-        safe_container_id=$(echo "$container_id" | sed 's/"/\\"/g')
-        safe_container_name=$(echo "$container_name" | sed 's/"/\\"/g')
-        
-        # Network and Block I/O metrics
-        echo "docker_container_network_rx_bytes_total{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $net_rx" >> "$METRICS_TEMP"
-        echo "docker_container_network_tx_bytes_total{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $net_tx" >> "$METRICS_TEMP"
-        echo "docker_container_block_io_read_bytes_total{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $block_read" >> "$METRICS_TEMP"
-        echo "docker_container_block_io_write_bytes_total{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $block_write" >> "$METRICS_TEMP"
-        echo "docker_container_pids{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $pids_value" >> "$METRICS_TEMP"
-        
-    done <<< "$docker_output"
     
     # Add exporter metadata
     local timestamp
@@ -478,19 +406,23 @@ start_http_server() {
         SERVER_PID=$!
     elif command -v nc >/dev/null 2>&1; then
         log "INFO" "Using netcat for HTTP server"
-        # Fallback to netcat - simple approach
+        # Fallback to netcat - improved approach
         while true; do
-            if [[ -f "$METRICS_FILE" ]]; then
-                (
-                    echo "HTTP/1.1 200 OK"
-                    echo "Content-Type: text/plain; version=0.0.4; charset=utf-8"
-                    echo "Connection: close"
-                    echo ""
+            {
+                echo "HTTP/1.1 200 OK"
+                echo "Content-Type: text/plain; version=0.0.4; charset=utf-8" 
+                echo "Content-Length: $(wc -c < "$METRICS_FILE" 2>/dev/null || echo 0)"
+                echo "Connection: close"
+                echo ""
+                if [[ -f "$METRICS_FILE" ]]; then
                     cat "$METRICS_FILE"
-                ) | nc -l -p "$PORT" -q 1
-            else
-                echo "# Metrics not available yet" | nc -l -p "$PORT" -q 1
-            fi
+                else
+                    echo "# Metrics not available yet"
+                fi
+            } | nc -l -p "$PORT" 2>/dev/null || {
+                log "WARN" "HTTP server connection error, restarting listener"
+                sleep 1
+            }
         done &
         SERVER_PID=$!
     else

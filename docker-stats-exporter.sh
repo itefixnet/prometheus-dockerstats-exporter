@@ -129,6 +129,7 @@ cleanup() {
     
     # Clean up temp files
     rm -f "$METRICS_TEMP"
+    rm -f "${SCRIPT_DIR}/http_response.sh"
     
     log "INFO" "Exporter stopped"
 }
@@ -388,47 +389,38 @@ start_http_server() {
         fi
     fi
     
-    # Create a simple HTTP server using socat or netcat
-    if command -v socat >/dev/null 2>&1; then
-        log "INFO" "Using socat for HTTP server"
-        # Use socat if available (more robust)
-        socat TCP-LISTEN:$PORT,bind=$BIND_ADDRESS,reuseaddr,fork EXEC:'bash -c "
-            echo \"HTTP/1.1 200 OK\"
-            echo \"Content-Type: text/plain; version=0.0.4; charset=utf-8\"
-            echo \"Connection: close\"
-            echo \"\"
-            if [[ -f \"'$METRICS_FILE'\" ]]; then
-                cat \"'$METRICS_FILE'\"
-            else
-                echo \"# Metrics not available yet\"
-            fi
-        "' &
-        SERVER_PID=$!
-    elif command -v nc >/dev/null 2>&1; then
-        log "INFO" "Using netcat for HTTP server"
-        # Fallback to netcat - improved approach
-        while true; do
-            {
-                echo "HTTP/1.1 200 OK"
-                echo "Content-Type: text/plain; version=0.0.4; charset=utf-8" 
-                echo "Content-Length: $(wc -c < "$METRICS_FILE" 2>/dev/null || echo 0)"
-                echo "Connection: close"
-                echo ""
-                if [[ -f "$METRICS_FILE" ]]; then
-                    cat "$METRICS_FILE"
-                else
-                    echo "# Metrics not available yet"
-                fi
-            } | nc -l -p "$PORT" 2>/dev/null || {
-                log "WARN" "HTTP server connection error, restarting listener"
-                sleep 1
-            }
-        done &
-        SERVER_PID=$!
-    else
-        log "ERROR" "Neither socat nor netcat (nc) found. Cannot start HTTP server."
+    # Create HTTP server using socat
+    if ! command -v socat >/dev/null 2>&1; then
+        log "ERROR" "socat not found. Please install socat package."
         exit 1
     fi
+    
+    log "INFO" "Using socat for HTTP server"
+    
+    # Create a simple response script for socat
+    cat > "${SCRIPT_DIR}/http_response.sh" << 'EOF'
+#!/bin/bash
+METRICS_FILE="$1"
+echo "HTTP/1.1 200 OK"
+echo "Content-Type: text/plain; version=0.0.4; charset=utf-8"
+if [[ -f "$METRICS_FILE" ]]; then
+    echo "Content-Length: $(wc -c < "$METRICS_FILE")"
+else
+    echo "Content-Length: 26"
+fi
+echo "Connection: close"
+echo ""
+if [[ -f "$METRICS_FILE" ]]; then
+    cat "$METRICS_FILE"
+else
+    echo "# Metrics not available yet"
+fi
+EOF
+    chmod +x "${SCRIPT_DIR}/http_response.sh"
+    
+    # Use socat with the response script
+    socat TCP-LISTEN:$PORT,bind=$BIND_ADDRESS,reuseaddr,fork EXEC:"${SCRIPT_DIR}/http_response.sh $METRICS_FILE" &
+    SERVER_PID=$!
     
     # Save server PID
     echo "$SERVER_PID" > "$PID_FILE"
@@ -449,9 +441,9 @@ check_basic_dependencies() {
         exit 1
     fi
     
-    # Check for socat or netcat
-    if ! command -v socat >/dev/null 2>&1 && ! command -v nc >/dev/null 2>&1; then
-        log "ERROR" "Neither socat nor netcat found. Please install one of them."
+    # Check for socat
+    if ! command -v socat >/dev/null 2>&1; then
+        log "ERROR" "socat not found. Please install socat package."
         exit 1
     fi
     

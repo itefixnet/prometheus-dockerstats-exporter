@@ -227,7 +227,10 @@ collect_metrics() {
     # Get docker stats output
     local docker_output
     if ! docker_output=$(docker stats --no-stream --format "table {{.Container}}\t{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}" 2>/dev/null); then
-        log "ERROR" "Failed to get Docker stats"
+        log "ERROR" "Failed to get Docker stats. Possible causes:"
+        log "ERROR" "  1. No containers running"
+        log "ERROR" "  2. Docker permission denied"
+        log "ERROR" "  3. Docker daemon not responding"
         return 1
     fi
     
@@ -239,6 +242,7 @@ EOF
 
     # Skip header line and process each container
     local line_count=0
+    local container_count=0
     while IFS=$'\t' read -r container_id container_name cpu_perc mem_usage mem_perc net_io block_io pids; do
         ((line_count++))
         
@@ -251,6 +255,8 @@ EOF
         if [[ -z "$container_id" ]]; then
             continue
         fi
+        
+        ((container_count++))
         
         log "DEBUG" "Processing container: $container_name ($container_id)"
         
@@ -288,6 +294,13 @@ EOF
         echo "docker_container_cpu_usage_percent{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $cpu_value" >> "$METRICS_TEMP"
         
     done <<< "$docker_output"
+    
+    # Log container count
+    if [[ $container_count -eq 0 ]]; then
+        log "INFO" "No running containers found"
+    else
+        log "DEBUG" "Processed $container_count containers"
+    fi
     
     # Add other metric types
     cat >> "$METRICS_TEMP" << 'EOF'
@@ -415,7 +428,7 @@ EOF
     # Atomically replace metrics file
     mv "$METRICS_TEMP" "$METRICS_FILE"
     
-    log "DEBUG" "Metrics updated successfully"
+    log "DEBUG" "Metrics updated successfully (file: $METRICS_FILE)"
 }
 
 # Start HTTP server using netcat
@@ -427,13 +440,17 @@ start_http_server() {
         # Use socat if available (more robust)
         while true; do
             if [[ -f "$METRICS_FILE" ]]; then
-                (
+                if ! (
                     echo "HTTP/1.1 200 OK"
                     echo "Content-Type: text/plain; version=0.0.4; charset=utf-8"
-                    echo "Content-Length: $(wc -c < "$METRICS_FILE")"
+                    echo "Content-Length: $(wc -c < "$METRICS_FILE" 2>/dev/null || echo 0)"
                     echo ""
                     cat "$METRICS_FILE"
-                ) | socat TCP-LISTEN:$PORT,bind=$BIND_ADDRESS,reuseaddr,fork STDIO
+                ) | socat TCP-LISTEN:$PORT,bind=$BIND_ADDRESS,reuseaddr,fork STDIO 2>/dev/null; then
+                    log "ERROR" "Failed to start HTTP server on $BIND_ADDRESS:$PORT"
+                    log "ERROR" "Port may already be in use"
+                    exit 1
+                fi
             else
                 sleep 1
             fi
@@ -460,6 +477,7 @@ start_http_server() {
     # Save server PID
     echo $! > "$PID_FILE"
     log "INFO" "HTTP server started with PID: $(cat "$PID_FILE")"
+    log "INFO" "Metrics available at: http://$BIND_ADDRESS:$PORT/metrics"
 }
 
 # Check dependencies
@@ -474,7 +492,11 @@ check_dependencies() {
     
     # Check Docker daemon
     if ! docker info >/dev/null 2>&1; then
-        log "ERROR" "Cannot connect to Docker daemon. Is Docker running?"
+        log "ERROR" "Cannot connect to Docker daemon. Common causes:"
+        log "ERROR" "  1. Docker is not running"
+        log "ERROR" "  2. User lacks permission to access Docker socket"
+        log "ERROR" "  3. Add user to docker group: sudo usermod -a -G docker \$USER"
+        log "ERROR" "  4. Restart session or run: newgrp docker"
         exit 1
     fi
     

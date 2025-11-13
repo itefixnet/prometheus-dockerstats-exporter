@@ -376,6 +376,16 @@ The systemd service runs with enhanced security:
 
 ## Troubleshooting
 
+### Quick Diagnosis
+
+Run the automated troubleshooting script:
+```bash
+chmod +x troubleshoot.sh
+./troubleshoot.sh
+```
+
+This will check all common issues and provide specific solutions.
+
 ### Service Won't Start
 
 1. **Check service status:**
@@ -385,7 +395,7 @@ The systemd service runs with enhanced security:
 
 2. **Check Docker access:**
    ```bash
-   sudo -u prometheus-docker-stats docker info
+   sudo -u docker-stats docker info  # or your configured user
    ```
 
 3. **Check dependencies:**
@@ -473,6 +483,7 @@ sudo userdel docker-stats
 ├── grafana-dashboard.json          # Grafana dashboard for multi-host monitoring
 ├── GRAFANA.md                     # Grafana setup and configuration guide
 ├── test.sh                        # Test script
+├── troubleshoot.sh                # Troubleshooting and diagnostic script
 └── README.md                      # This documentation
 ```
 

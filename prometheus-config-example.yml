@@ -1,0 +1,22 @@
+# Add this to your prometheus.yml
+
+scrape_configs:
+  - job_name: 'docker-stats-exporter'
+    static_configs:
+      - targets: ['localhost:9417']
+        labels:
+          instance: 'docker-host-1'  # This adds the instance label
+    scrape_interval: 15s
+    metrics_path: /metrics
+
+  # For multiple hosts:
+  - job_name: 'docker-stats-exporter-multi'
+    static_configs:
+      - targets: ['host1:9417']
+        labels:
+          instance: 'docker-host-1'
+      - targets: ['host2:9417'] 
+        labels:
+          instance: 'docker-host-2'
+    scrape_interval: 15s
+    metrics_path: /metrics

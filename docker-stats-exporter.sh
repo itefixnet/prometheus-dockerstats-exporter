@@ -19,6 +19,7 @@ PORT=9417
 INTERVAL=15
 LOG_LEVEL="INFO"
 BIND_ADDRESS="0.0.0.0"
+INSTANCE_NAME="${INSTANCE_NAME:-$(hostname)}"
 
 # Load configuration if exists
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -45,6 +46,10 @@ while [[ $# -gt 0 ]]; do
             BIND_ADDRESS="$2"
             shift 2
             ;;
+        --instance-name)
+            INSTANCE_NAME="$2"
+            shift 2
+            ;;
         --config)
             CONFIG_FILE="$2"
             # shellcheck source=/dev/null
@@ -62,6 +67,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --interval SECONDS    Collection interval in seconds (default: 15)"
             echo "  --log-level LEVEL     Log level: DEBUG, INFO, WARN, ERROR (default: INFO)"
             echo "  --bind-address ADDR   Address to bind to (default: 0.0.0.0)"
+            echo "  --instance-name NAME  Instance name for metrics labels (default: hostname)"
             echo "  --config FILE         Configuration file path"
             echo "  --test-server         Test HTTP server without Docker (for debugging)"
             echo "  --help               Show this help message"
@@ -239,13 +245,19 @@ collect_metrics() {
     
     # Get docker stats output
     local docker_output
-    if ! docker_output=$(docker stats --no-stream --format "table {{.Container}}\t{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}" 2>/dev/null); then
+    if ! docker_output=$(docker stats --no-stream --format "{{.Container}}\t{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}" 2>/dev/null); then
         log "WARN" "Failed to get Docker stats. Possible causes:"
         log "WARN" "  1. No containers running"
         log "WARN" "  2. Docker permission denied" 
         log "WARN" "  3. Docker daemon not responding"
         log "WARN" "Will retry in ${INTERVAL}s..."
         return 1
+    fi
+    
+    # Debug: log raw docker output (only when DEBUG level)
+    if [[ "$LOG_LEVEL" == "DEBUG" ]]; then
+        log "DEBUG" "Raw docker stats output:"
+        log "DEBUG" "$docker_output"
     fi
     
     # Create complete metrics file with all metric types and data in one pass
@@ -280,16 +292,8 @@ collect_metrics() {
 EOF
 
     # Process each container once and generate all metrics
-    local line_count=0
     local container_count=0
     while IFS=$'\t' read -r container_id container_name cpu_perc mem_usage mem_perc net_io block_io pids; do
-        ((line_count++))
-        
-        # Skip header line
-        if [[ $line_count -eq 1 ]]; then
-            continue
-        fi
-        
         # Skip empty lines
         if [[ -z "$container_id" ]]; then
             continue
@@ -329,17 +333,21 @@ EOF
         safe_container_id=$(echo "$container_id" | sed 's/"/\\"/g')
         safe_container_name=$(echo "$container_name" | sed 's/"/\\"/g')
         
+        # Get hostname for instance label
+        local instance_name
+        instance_name="${INSTANCE_NAME:-$(hostname)}"
+        
         # Generate ALL metrics for this container at once
         {
-            echo "docker_container_cpu_usage_percent{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $cpu_value"
-            echo "docker_container_memory_usage_bytes{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $mem_usage_bytes"
-            echo "docker_container_memory_limit_bytes{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $mem_limit_bytes"
-            echo "docker_container_memory_usage_percent{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $mem_perc_value"
-            echo "docker_container_network_rx_bytes_total{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $net_rx"
-            echo "docker_container_network_tx_bytes_total{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $net_tx"
-            echo "docker_container_block_io_read_bytes_total{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $block_read"
-            echo "docker_container_block_io_write_bytes_total{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $block_write"
-            echo "docker_container_pids{container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $pids_value"
+            echo "docker_container_cpu_usage_percent{instance=\"$instance_name\",container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $cpu_value"
+            echo "docker_container_memory_usage_bytes{instance=\"$instance_name\",container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $mem_usage_bytes"
+            echo "docker_container_memory_limit_bytes{instance=\"$instance_name\",container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $mem_limit_bytes"
+            echo "docker_container_memory_usage_percent{instance=\"$instance_name\",container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $mem_perc_value"
+            echo "docker_container_network_rx_bytes_total{instance=\"$instance_name\",container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $net_rx"
+            echo "docker_container_network_tx_bytes_total{instance=\"$instance_name\",container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $net_tx"
+            echo "docker_container_block_io_read_bytes_total{instance=\"$instance_name\",container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $block_read"
+            echo "docker_container_block_io_write_bytes_total{instance=\"$instance_name\",container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $block_write"
+            echo "docker_container_pids{instance=\"$instance_name\",container_id=\"$safe_container_id\",container_name=\"$safe_container_name\"} $pids_value"
         } >> "$METRICS_TEMP"
         
     done <<< "$docker_output"
@@ -354,21 +362,23 @@ EOF
 
     
     # Add exporter metadata
-    local timestamp
+    local timestamp instance_name
     timestamp=$(date +%s)
+    instance_name="${INSTANCE_NAME:-$(hostname)}"
+    
     cat >> "$METRICS_TEMP" << EOF
 
 # HELP docker_stats_exporter_up Exporter status (1=up, 0=down)
 # TYPE docker_stats_exporter_up gauge
-docker_stats_exporter_up 1
+docker_stats_exporter_up{instance="$instance_name"} 1
 
 # HELP docker_stats_exporter_last_scrape_timestamp_seconds Last time metrics were scraped
 # TYPE docker_stats_exporter_last_scrape_timestamp_seconds gauge
-docker_stats_exporter_last_scrape_timestamp_seconds $timestamp
+docker_stats_exporter_last_scrape_timestamp_seconds{instance="$instance_name"} $timestamp
 
 # HELP docker_stats_exporter_scrape_duration_seconds Time spent scraping metrics
 # TYPE docker_stats_exporter_scrape_duration_seconds gauge
-docker_stats_exporter_scrape_duration_seconds $(echo "scale=3; $SECONDS" | bc -l)
+docker_stats_exporter_scrape_duration_seconds{instance="$instance_name"} $(echo "scale=3; $SECONDS" | bc -l)
 EOF
     
     # Atomically replace metrics file
@@ -537,14 +547,16 @@ EOF
         else
             log "WARN" "Metrics collection failed, will retry in ${INTERVAL}s"
             # Create empty metrics file so HTTP server has something to serve
+            local instance_name
+            instance_name="${INSTANCE_NAME:-$(hostname)}"
             cat > "$METRICS_FILE" << EOF
 # HELP docker_stats_exporter_up Exporter status (1=up, 0=down)
 # TYPE docker_stats_exporter_up gauge
-docker_stats_exporter_up 0
+docker_stats_exporter_up{instance="$instance_name"} 0
 
 # HELP docker_stats_exporter_last_error_timestamp_seconds Timestamp of last error
 # TYPE docker_stats_exporter_last_error_timestamp_seconds gauge
-docker_stats_exporter_last_error_timestamp_seconds $(date +%s)
+docker_stats_exporter_last_error_timestamp_seconds{instance="$instance_name"} $(date +%s)
 EOF
         fi
         

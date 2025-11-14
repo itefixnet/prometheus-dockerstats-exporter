@@ -4,7 +4,8 @@ After=docker.service
 
 [Service]
 Type=simple
-ExecStart=/path/to/docker-stats-exporter.sh
+ExecStart=/opt/docker-stats-exporter/docker-stats-exporter.sh
+WorkingDirectory=/opt/docker-stats-exporter
 Restart=on-failure
 RestartSec=5
 

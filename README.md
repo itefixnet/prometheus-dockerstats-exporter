@@ -34,24 +34,24 @@ chmod +x docker-stats-exporter.sh
 
 | Metric Name | Description | Labels |
 |-------------|-------------|--------|
-| `docker_container_cpu_usage_percent` | CPU usage percentage of the container | `container_id`, `container_name` |
-| `docker_container_memory_usage_bytes` | Memory usage in bytes | `container_id`, `container_name` |
-| `docker_container_memory_limit_bytes` | Memory limit in bytes | `container_id`, `container_name` |
-| `docker_container_memory_usage_percent` | Memory usage percentage | `container_id`, `container_name` |
-| `docker_container_network_rx_bytes_total` | Total network bytes received | `container_id`, `container_name` |
-| `docker_container_network_tx_bytes_total` | Total network bytes transmitted | `container_id`, `container_name` |
-| `docker_container_block_io_read_bytes_total` | Total block I/O bytes read | `container_id`, `container_name` |
-| `docker_container_block_io_write_bytes_total` | Total block I/O bytes written | `container_id`, `container_name` |
-| `docker_container_pids` | Number of PIDs in the container | `container_id`, `container_name` |
-| `docker_stats_exporter_last_scrape_timestamp_seconds` | Last scrape timestamp | none |
-| `docker_stats_exporter_scrape_duration_seconds` | Time spent collecting metrics | none |
+| `docker_container_cpu_usage_percent` | CPU usage percentage of the container | `instance`, `container_id`, `container_name` |
+| `docker_container_memory_usage_bytes` | Memory usage in bytes | `instance`, `container_id`, `container_name` |
+| `docker_container_memory_limit_bytes` | Memory limit in bytes | `instance`, `container_id`, `container_name` |
+| `docker_container_memory_usage_percent` | Memory usage percentage | `instance`, `container_id`, `container_name` |
+| `docker_container_network_rx_bytes_total` | Total network bytes received | `instance`, `container_id`, `container_name` |
+| `docker_container_network_tx_bytes_total` | Total network bytes transmitted | `instance`, `container_id`, `container_name` |
+| `docker_container_block_io_read_bytes_total` | Total block I/O bytes read | `instance`, `container_id`, `container_name` |
+| `docker_container_block_io_write_bytes_total` | Total block I/O bytes written | `instance`, `container_id`, `container_name` |
+| `docker_container_pids` | Number of PIDs in the container | `instance`, `container_id`, `container_name` |
+| `docker_stats_exporter_up` | Exporter status (1=up, 0=down) | `instance` |
+| `docker_stats_exporter_last_scrape_timestamp_seconds` | Last scrape timestamp | `instance` |
 
 ## System Requirements
 
 - **Operating System**: Linux with systemd
 - **Docker**: Docker daemon running and accessible
-- **Dependencies**: `bash`, `bc`, `socat` or `netcat`, `systemctl`
-- **Permissions**: Root access for installation (service runs as non-root user)
+- **Dependencies**: `bash`, `bc`, `socat`, `systemctl`
+- **Permissions**: Root access for installation (service can run as non-root user)
 
 ### Installation Dependencies
 
@@ -67,6 +67,8 @@ sudo yum install docker bc socat
 # or for newer versions:
 sudo dnf install docker bc socat
 ```
+
+**Note**: Only `socat` is required for HTTP server functionality. The exporter no longer supports `netcat`.
 
 ## Manual Installation
 
@@ -91,26 +93,19 @@ sudo chown -R docker-stats:docker-stats /opt/docker-stats-exporter
 
 ### 3. Install Systemd Service
 
-Choose between minimal or full service configuration:
-
-**Option A: Minimal service (recommended for simple setups)**
+First, update the service file with the correct path:
 ```bash
 # Edit docker-stats-exporter.service and set the correct ExecStart path
+# Change: ExecStart=/path/to/docker-stats-exporter.sh
+# To:     ExecStart=/opt/docker-stats-exporter/docker-stats-exporter.sh
+
 sudo cp docker-stats-exporter.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable docker-stats-exporter
 sudo systemctl start docker-stats-exporter
 ```
 
-**Option B: Full-featured service (for production environments)**
-```bash
-# Use the full version with all options
-sudo cp docker-stats-exporter.service.full /etc/systemd/system/docker-stats-exporter.service
-# Edit the service file to uncomment and configure desired options
-sudo systemctl daemon-reload
-sudo systemctl enable docker-stats-exporter  
-sudo systemctl start docker-stats-exporter
-```
+**Note**: The service file requires you to update the `ExecStart` path to match your installation directory.
 
 ### 4. Verify Installation
 
@@ -131,7 +126,7 @@ The exporter installs with these defaults:
 
 ### Configuration File
 
-Edit `/opt/prometheus-docker-stats-exporter/docker-stats-exporter.conf`:
+Edit `/opt/docker-stats-exporter/docker-stats-exporter.conf`:
 
 ```bash
 # Port to expose metrics on
@@ -145,6 +140,9 @@ LOG_LEVEL="INFO"
 
 # Bind address (use 0.0.0.0 to bind to all interfaces)
 BIND_ADDRESS="0.0.0.0"
+
+# Instance name for metrics labels (defaults to hostname)
+INSTANCE_NAME="docker-host-1"
 ```
 
 After changing configuration, restart the service:
@@ -154,34 +152,40 @@ sudo systemctl restart docker-stats-exporter
 
 ## Service Management
 
-### Service File Versions
+### Service Configuration
 
-**Minimal Service (`docker-stats-exporter.service`)**
-- Bare minimum configuration
-- Only requires setting the `ExecStart` path
-- Runs as root by default
-- Suitable for development/testing
+The provided `docker-stats-exporter.service` file is a minimal systemd service configuration. Before installation, you must update the `ExecStart` path:
 
-**Full Service (`docker-stats-exporter.service.full`)**  
-- Complete configuration with all options
-- Security hardening options (commented out)
-- Resource limits and advanced settings
-- Production-ready with customization options
-
-### Minimal Service Customization
-
-For the minimal service, only edit:
 ```ini
-ExecStart=/path/to/docker-stats-exporter.sh
+[Unit]
+Description=Prometheus Docker Stats Exporter
+After=docker.service
+
+[Service]
+Type=simple
+ExecStart=/opt/docker-stats-exporter/docker-stats-exporter.sh  # Update this path
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-### Full Service Customization
+### Security Considerations
 
-For the full service, uncomment and configure as needed:
-- User/group settings for security
-- Security hardening options  
-- Resource limits
-- Working directory and paths
+The default service runs as root for Docker socket access. For production environments, consider:
+
+1. **Create dedicated user**:
+   ```bash
+   sudo useradd --system --home-dir /opt/docker-stats-exporter --shell /bin/false docker-stats
+   sudo usermod -a -G docker docker-stats
+   ```
+
+2. **Add to service file**:
+   ```ini
+   User=docker-stats
+   Group=docker-stats
+   ```
 
 ### Basic Commands
 
@@ -250,9 +254,14 @@ chmod +x docker-stats-exporter.sh
 | `--interval SECONDS` | 15 | Collection interval in seconds |
 | `--log-level LEVEL` | INFO | Log level (DEBUG, INFO, WARN, ERROR) |
 | `--bind-address ADDR` | 0.0.0.0 | Address to bind HTTP server to |
+| `--instance-name NAME` | hostname | Instance name for metrics labels |
 | `--config FILE` | `./docker-stats-exporter.conf` | Configuration file path |
 
 ## Prometheus Configuration
+
+The repository includes an example Prometheus configuration file (`prometheus-config-example.yml`).
+
+### Single Host Configuration
 
 Add this job to your `prometheus.yml`:
 
@@ -261,6 +270,8 @@ scrape_configs:
   - job_name: 'docker-stats-exporter'
     static_configs:
       - targets: ['localhost:9417']
+        labels:
+          instance: 'docker-host-1'  # This adds the instance label
     scrape_interval: 15s
     metrics_path: /metrics
 ```
@@ -271,15 +282,22 @@ For monitoring multiple hosts:
 
 ```yaml
 scrape_configs:
-  - job_name: 'docker-stats-exporter'
+  - job_name: 'docker-stats-exporter-multi'
     static_configs:
-      - targets: 
-        - 'host1:9417'
-        - 'host2:9417'
-        - 'host3:9417'
+      - targets: ['host1:9417']
+        labels:
+          instance: 'docker-host-1'
+      - targets: ['host2:9417'] 
+        labels:
+          instance: 'docker-host-2'
+      - targets: ['host3:9417']
+        labels:
+          instance: 'docker-host-3'
     scrape_interval: 15s
     metrics_path: /metrics
 ```
+
+**Important**: The `instance` label is crucial for the Grafana dashboard to work properly with multiple hosts.
 
 ## Grafana Dashboard
 
@@ -314,7 +332,13 @@ A comprehensive Grafana dashboard is provided that supports monitoring multiple 
 - **Disk I/O**: Read/write rates per container
 - **Top Lists**: Highest resource consumers
 
-For detailed setup instructions, see [GRAFANA.md](GRAFANA.md)
+### Import Instructions
+1. In Grafana, go to **Dashboards** → **New** → **Import**
+2. Upload the `grafana-dashboard.json` file from this repository
+3. Select your Prometheus datasource when prompted
+4. Click **Import**
+
+The dashboard will automatically detect and display all hosts running the exporter.
 
 ## Example Queries
 
@@ -365,26 +389,17 @@ rate(docker_container_block_io_write_bytes_total[5m])
 
 ## Security Features
 
-The systemd service runs with enhanced security:
+The exporter includes several security considerations:
 
-- **Non-root user**: Runs as dedicated `prometheus-docker-stats` user
-- **Restricted filesystem**: Uses `ProtectSystem=strict`
-- **No new privileges**: `NoNewPrivileges=yes`
-- **Restricted syscalls**: Limited system call access
-- **Memory protection**: `MemoryDenyWriteExecute=yes`
-- **Private /tmp**: `PrivateTmp=yes`
+- **Minimal dependencies**: Only requires `bash`, `bc`, and `socat`
+- **Docker socket access**: Requires Docker group membership or root access
+- **HTTP server**: Uses `socat` for lightweight, secure HTTP serving
+- **Configuration**: Supports custom bind addresses and non-privileged ports
+- **Instance labels**: Prevents metric conflicts in multi-host environments
+
+For production deployments, run as a dedicated user with Docker group access.
 
 ## Troubleshooting
-
-### Quick Diagnosis
-
-Run the automated troubleshooting script:
-```bash
-chmod +x troubleshoot.sh
-./troubleshoot.sh
-```
-
-This will check all common issues and provide specific solutions.
 
 ### Service Won't Start
 
@@ -393,14 +408,25 @@ This will check all common issues and provide specific solutions.
    sudo systemctl status docker-stats-exporter
    ```
 
-2. **Check Docker access:**
+2. **Check logs:**
    ```bash
-   sudo -u docker-stats docker info  # or your configured user
+   sudo journalctl -u docker-stats-exporter -f
    ```
 
-3. **Check dependencies:**
+3. **Verify service file path:**
+   ```bash
+   # Make sure the ExecStart path in the service file is correct
+   sudo systemctl cat docker-stats-exporter
+   ```
+
+4. **Check dependencies:**
    ```bash
    which docker bc socat
+   ```
+
+5. **Test Docker access:**
+   ```bash
+   docker stats --no-stream
    ```
 
 ### No Metrics Appearing
@@ -417,14 +443,25 @@ This will check all common issues and provide specific solutions.
 
 3. **Verify Docker stats command:**
    ```bash
-   docker stats --no-stream --format table
+   # Test the exact command the exporter uses
+   docker stats --no-stream --format "{{.Container}}\t{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.NetIO}}\t{{.BlockIO}}\t{{.PIDs}}"
+   ```
+
+4. **Check parsing with debug mode:**
+   ```bash
+   # Run manually with debug logging
+   ./docker-stats-exporter.sh --log-level DEBUG --port 9418
    ```
 
 ### Permission Issues
 
-1. **Check user is in docker group:**
+1. **Check user has Docker access:**
    ```bash
-   groups prometheus-docker-stats
+   # If running as specific user, check group membership
+   groups docker-stats  # or whatever user you configured
+   
+   # Test Docker access
+   docker ps
    ```
 
 2. **Restart Docker service:**
@@ -441,7 +478,7 @@ This will check all common issues and provide specific solutions.
 
 1. **Increase collection interval:**
    ```bash
-   # Edit /opt/prometheus-docker-stats-exporter/docker-stats-exporter.conf
+   # Edit /opt/docker-stats-exporter/docker-stats-exporter.conf
    INTERVAL=30
    sudo systemctl restart docker-stats-exporter
    ```
@@ -469,7 +506,7 @@ sudo systemctl daemon-reload
 sudo rm -rf /opt/docker-stats-exporter
 
 # Remove user (if created)
-sudo userdel docker-stats
+sudo userdel docker-stats  # or whatever user you created
 ```
 
 ## Development
@@ -477,13 +514,11 @@ sudo userdel docker-stats
 ### File Structure
 ```
 ├── docker-stats-exporter.sh       # Main exporter script
-├── docker-stats-exporter.service  # Minimal systemd service file
-├── docker-stats-exporter.service.full # Full-featured systemd service file
+├── docker-stats-exporter.service  # Systemd service file
 ├── docker-stats-exporter.conf     # Configuration file
 ├── grafana-dashboard.json          # Grafana dashboard for multi-host monitoring
-├── GRAFANA.md                     # Grafana setup and configuration guide
-├── test.sh                        # Test script
-├── troubleshoot.sh                # Troubleshooting and diagnostic script
+├── prometheus-config-example.yml  # Example Prometheus configuration
+├── LICENSE                        # MIT license
 └── README.md                      # This documentation
 ```
 
@@ -514,10 +549,18 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Changelog
 
+### Latest
+- **Fixed Docker stats parsing**: Removed `table` format to fix container name extraction
+- **Added instance labels**: All metrics now include `instance` label for multi-host support
+- **Improved HTTP server**: Socat-only implementation with proper Content-Length headers
+- **Enhanced Grafana dashboard**: Multi-host support with filtering variables
+- **Added debug logging**: Better troubleshooting with raw Docker output logging
+- **Updated documentation**: Fixed paths, added missing configuration options
+- **Prometheus config example**: Added `prometheus-config-example.yml` file
+
 ### v1.0.0
 - Initial bash-based implementation
 - Systemd service integration
-- Automated installation script
 - Security hardening
 - Comprehensive documentation
 - Support for all major Docker stats metrics

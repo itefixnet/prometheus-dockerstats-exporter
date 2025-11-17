@@ -1,3 +1,5 @@
+![](grafana-dashboard-dockerstats.png)
+
 # Prometheus Docker Stats Exporter (Bash/Systemd)
 
 A lightweight, bash-based Prometheus exporter that collects Docker container statistics using the native `docker stats` command and runs as a systemd service.

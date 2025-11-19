@@ -1,0 +1,23 @@
+services:
+  prometheus-dockerstats-exporter:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: prometheus-dockerstats-exporter
+    restart: unless-stopped
+    user: "1000:999"   # Change 999 to match your host's docker group GID
+    ports:
+      - "9417:9417"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      # Port number for the HTTP metrics endpoint (default: 9417)
+      - PORT=9417
+      # Collection interval in seconds - how often to gather Docker stats (default: 15)
+      - INTERVAL=15
+      # Logging level: DEBUG, INFO, WARN, ERROR (default: INFO)
+      - LOG_LEVEL=INFO
+      # Instance name used in Prometheus metric labels to identify this exporter
+      - INSTANCE_NAME=docker-host
+      # Bind address for the HTTP server (default: 0.0.0.0)
+      - BIND_ADDRESS=0.0.0.0
